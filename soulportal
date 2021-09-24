@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html>
+   <head>
+
+<script id="vertex" type="x-shader">
+attribute vec2 aVertexPosition;
+
+void main()
+{
+   gl_Position = vec4(aVertexPosition, 0.0, 1.0);
+}
+      </script>
+      
+      <script id="fragment" type="x-shader">
+
+
+#ifdef GL_ES
+precision highp float;
+#endif
+
+
+uniform float time;
+uniform vec2 resolution;
+uniform vec2 Mouse;
+float zoom=1.5;
+
+
+#define STEPS 1./20.
+#define VOLUME_BIAS 0.01
+#define MIN_DIST 0.005
+#define STEP_DAMPING .9
+#define PI 3.14159
+#define TAU PI*2.
+
+
+
+
+const float MAX = 10000.0;
+
+// ray intersects sphere
+// e = -b +/- sqrt( b^2 - c )
+vec2 AtmosCirc( vec3 p, vec3 dir, float r ) {
+    float b = dot( p, dir );
+    float c = dot( p, p ) - r * r;
+    
+    float d = b * b - c;
+    if ( d < 0.0 ) {
+        return vec2( MAX, -MAX );
+    }
+    d = sqrt( d );
+    
+    return vec2( -b - d, -b + d );
+}
+
+
+float modulate_MediumDist( float g, float c, float cc ) {
+    float gg = g * g;
+    
+    float a = ( 1.0 - gg ) * ( 1.0 + cc );
+
+    float b = 1.0 + gg - 2.0 * g * c;
+    b *= sqrt( b );
+    b *= 2.0 + gg;  
+    
+    return ( 3.0 / 8.0 / PI ) * a / b;
+}
+
+float modulateRays( float cc ) {
+    return ( 3.0 / 16.0 / PI ) * ( 1.0 + cc );
+}
+
+// sc const
+const float R_INNER = 2.0;
+const float R = R_INNER + 0.1;
+
+const int SCALEOUT_sc = 4;
+const int SCALEinsc = 40;
+
+float density( vec3 p, float ph ) {
+    return exp( -max( length( p ) - R_INNER, 0.0 ) / ph );
+}
+
+float eyeScale( vec3 p, vec3 q, float ph ) {
+    vec3 s = ( q - p ) / float( SCALEOUT_sc );
+    vec3 v = p + s * 0.5;
+    
+    float sum = 0.0;
+    for(int i = 0; i < SCALEOUT_sc; i++ ) {
+        sum += density( v, ph );
+        v += s;
+    }
+    sum *= length( s );
+    
+    return sum;
+}
+
+vec3 insc( vec3 o, vec3 dir, vec2 e, vec3 l ) {
+    const float ph_ray = 0.05;
+    const float ph_mie = 0.02;
+    
+    const vec3 k_ray = vec3( 3.8, 13.5, 33.1 );
+    const vec3 k_mie = vec3( 21.0 );
+    const float k_mie_ex = 1.1;
+    
+    vec3 sum_ray = vec3( 0.0 );
+    vec3 sum_mie = vec3( 0.0 );
+    
+    float n_ray0 = 0.0;
+    float n_mie0 = 0.0;
+    
+    float len = ( e.y - e.x ) / float( SCALEinsc );
+    vec3 s = dir * len;
+    vec3 v = o + dir * ( e.x + len * 0.5 );
+    
+    for(int i = 0; i < SCALEinsc; i++) {   
+        v += s;
+        float d_ray = density( v, ph_ray ) * len;
+        float d_mie = density( v, ph_mie ) * len;
+        
+        n_ray0 += d_ray;
+        n_mie0 += d_mie;
+        
+#if 0
+        vec2 e = AtmosCirc( v, l, R_INNER );
+        e.x = max( e.x, 0.0 );
+        if ( e.x < e.y ) {
+           continue;
+        }
+#endif
+        
+        vec2 f = AtmosCirc( v, l, R );
+        vec3 u = v + l * f.y;
+        
+        float n_ray1 = eyeScale( v, u, ph_ray );
+        float n_mie1 = eyeScale( v, u, ph_mie );
+        
+        vec3 att = exp( - ( n_ray0 + n_ray1 ) * k_ray - ( n_mie0 + n_mie1 ) * k_mie * k_mie_ex );
+        
+        sum_ray += d_ray * att;
+        sum_mie += d_mie * att;
+    }
+    
+    float c  = dot( dir, -l );
+    float cc = c * c;
+    vec3 sc =
+        sum_ray * k_ray * modulateRays( cc ) +
+        sum_mie * k_mie * modulate_MediumDist( -0.78, c, cc );
+    
+    
+    return 10.0 * sc;
+}
+
+
+mat3 Rotation( vec2 angle ) {
+    vec2 c = cos( angle );
+    vec2 s = sin( angle );
+    
+    return mat3(
+        c.y      ,  0.0, -s.y,
+        s.y * s.x,  c.x,  c.y * s.x,
+        s.y * c.x, -s.x,  c.y * c.x
+    );
+}
+
+
+vec3 RayDirectionNormal( float fov, vec2 size, vec2 pos ) {
+    vec2 xy = pos - size * 0.5;
+
+    float cot_half_fov = tan( radians( 90.0 - fov * 0.5 ) );    
+    float z = size.y * 0.5 * cot_half_fov;
+    
+    return normalize( vec3( xy, -z ) );
+}
+
+
+
+float rng (vec2 seed) { return fract(sin(dot(seed*.1684,vec2(54.649,321.547)))*450315.); }
+mat2 rot (float a) { float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+float sdSphere (vec3 p, float r) { return length(p)-r; }
+float sdCylinder (vec2 p, float r) { return length(p)-r; }
+float sdIso(vec3 p, float r) { return max(0.,dot(p,normalize(sign(p))))-r; }
+float sdBox( vec3 p, vec3 b ) {
+  vec3 d = abs(p) - b;
+  return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+}
+float FirstMod (inout vec2 p, float count) {
+    float an = TAU/count;
+    float a = atan(p.y,p.x)+an/2.;
+    float c = floor(a/an);
+    a = mod(a,an)-an/2.;
+    p.xy = vec2(cos(a),sin(a))*length(p);
+    return c;
+}
+
+float modulateOver (float v, float c) { return mod(v,c)-c/2.; }
+float smin (float a, float b, float r) {
+    float h = clamp(.5+.5*(b-a)/r, 0., 1.);
+    return mix(b,a,h)-r*h*(1.-h);
+}
+
+
+float conctrs (vec3 pos) {
+    
+    // cylinder made of 8 tube
+    float cylinderRadius = .02; // change shape
+    vec3 p = pos;
+    p.xz *= rot(p.y*.5); // twist amount
+    float c = FirstMod(p.xz, 8.); // amount of conctrs
+    p.x -= 2.; // tube cylinder radius
+    float tube = sdCylinder(p.xz, cylinderRadius);
+    
+    // another cylinder made of conctrs 16
+    p = pos;
+    p.xz *= rot(-p.y*.5); // twist amount
+    c = FirstMod(p.xz, 16.); // amount of conctrs
+    p.x -= 2.; // tube cylinder radius
+    tube = smin(tube, sdCylinder(p.xz, cylinderRadius), .15);
+    return tube;
+}
+
+
+float mask (vec3 pos) {
+    float radius = 1.5;
+    float radiusInner = .57;
+    float thin = .01;
+    float modulateOverY = 2.;
+    float cellY = floor(pos.y/modulateOverY);
+    float a = atan(pos.z,pos.x)-time*.3+cellY*.1;
+    vec3 p = pos;
+    p.y += sin(a*6.)*.1;
+    p.y = modulateOver(p.y, modulateOverY);
+    float disk = max(-sdCylinder(p.xz, radiusInner), sdCylinder(p.xz, radius));
+    disk = max(abs(p.y)-thin,disk);
+    return disk;
+}
+
+vec3 warp1 (vec3 p) {
+    float t = time*.5;
+    p.xz *= rot(t);
+    p.xy *= rot(t*.7);
+    p.yz *= rot(t*.5);
+    return p;
+}
+
+vec3 warp2 (vec3 p) {
+    float t = -time*.4;
+    p.xz *= rot(t*.9);
+    p.xy *= rot(t*.6);
+    p.yz *= rot(t*.3);
+    return p;
+}
+
+float map (vec3 pos) {
+    float scene = 1000.;
+    
+    // ground and ceiling
+    float bump = .5;
+    float ground = 2. - bump*.1;
+    scene = min(scene, pos.y+ground);
+    scene = min(scene, -(pos.y-ground));
+    
+    // spell geometry 1
+    vec3 p = pos;
+    p.y += sin(atan(p.z,p.x)*10.)*3.; // change numbers to get new distortion
+    p.xz *= rot(p.y*.2-time);
+    p = warp1(p);
+    p.x = length(p.xyz)-3.;
+    scene = smin(scene, conctrs(p), .5);
+    scene = smin(scene, mask(p), .5);
+    
+    // spell geometry 2
+    p = pos;
+    p.y += sin(atan(p.z,p.x)*3.)*2.; // change numbers to get new distortion
+    p = warp2(p);
+    p.xz *= rot(p.y+time);
+    p.x = length(p.xyz)-3.;
+    scene = smin(scene, conctrs(p), .3);
+    scene = smin(scene, mask(p), .3);
+    
+    return scene;
+}
+
+void camera (inout vec3 p) {
+   // p.xz *= rot((-PI*(iMouse.x/resolution.x-.5)));
+}
+
+
+
+vec3 phong(vec3 lightpos, vec3 normal, vec3 pos, vec3 dir, vec3 eye, vec3 bgCol, float depth)
+{
+    vec3 EV = normalize(pos - eye);
+    float shiny = 16.0;
+    vec3 reflecVector = reflect(EV,normal);
+    float fresnel = normalize(dot(pos,normal));
+    fresnel = depth/ 2.0;
+    fresnel = pow(fresnel,5.0);
+    fresnel = clamp(0.0,1.0,fresnel);
+    fresnel *= 0.2;
+      
+    vec3 light_01_pos = lightpos;
+    vec3 light_01_color = vec3(1.0,0.2,0.1);
+    float light_01_Brightness = 2.0;
+    
+    vec3 l1_V = normalize(light_01_pos - EV);
+    float diffuse = max(0.0,dot(l1_V,normal));
+    float specular = max(0.0,dot(l1_V,reflecVector))*light_01_Brightness;
+    specular = pow(specular,shiny);
+    reflecVector.yz *= -1.0;
+    
+   
+    vec3 finalcol = vec3(0.0);
+    finalcol += light_01_color * (diffuse + specular);
+   
+        
+    return finalcol;
+}
+
+vec3 calcNormal(vec3 pos)
+{
+    float rfactor = 0.02;
+    vec3 deltax = vec3(rfactor,0.0,0.0);
+    vec3 deltay = vec3(0.0,rfactor,0.0);
+    vec3 deltaz = vec3(0.0,0.0,rfactor);
+    float nR = map(pos + deltax) - map(pos-deltax);
+    float nG = map(pos + deltay) - map(pos-deltay);
+    float nB = map(pos + deltaz) - map(pos-deltaz);
+    return normalize(vec3(nR,nG,nB));
+}
+
+
+void main()
+{
+
+
+    vec2 uv = vec2(0.5)-(gl_FragCoord.xy/resolution.xy);
+     vec2 mouse = vec2(0.0);
+    //vec2 mouse = iMouse.xy/resolution.xy;
+    vec3 eye = vec3(0.,0.,-7.+mouse.y*3.);
+    vec3 ray = normalize(vec3(uv,.7));
+    camera(eye);
+    camera(ray);
+    vec3 pos = eye;
+    vec3 normo;
+    float shade = 0.;
+    float dist;
+    for (float i = 0.; i <= 1.; i+=0.3) {
+         dist = map(pos);
+         normo = calcNormal(pos+ray*1.0);
+        if (dist < VOLUME_BIAS) {
+            shade += 0.3;
+        }
+        if (shade >= 1.) break;
+        dist *= STEP_DAMPING + .1 * rng(uv+fract(time));
+        dist = max(MIN_DIST, dist);
+        pos += dist * ray;
+    }
+    
+    
+    
+    
+   
+    vec3 dir = RayDirectionNormal( 45.0, resolution.xy, gl_FragCoord.xy );
+   
+    mat3 rot = Rotation( vec2( 0.0, sin(time*0.4)+5.5 * 0.5 ) );
+    dir = rot * dir;
+    eye = rot * eye;
+    
+    // sun light
+    vec3 l = vec3( 0.0, 0.0, 1.0 );
+              
+    vec2 e = AtmosCirc( eye, dir, R );
+    if ( e.x > e.y ) {
+        gl_FragColor = vec4( 0.0, 0.0, 0.0, 1.0 );
+        return;
+    }
+    
+   
+    
+    
+    
+    vec2 f = AtmosCirc( eye, dir, R_INNER );
+    e.y = min( e.y, f.x );
+
+    vec3 I = insc( eye, dir, e, l );
+    
+    
+    gl_FragColor = vec4(1);
+    vec3 sh = mix(vec3(0.2,0.0,.1),vec3(0.0,0.0,0.0),shade*shade*shade);
+    vec3 vf =  mix(sh + I, I.xyz, pow(I.x,2.0));
+    
+    
+    vec3 maincirc = mix(vf + (phong(vec3(1.,0.0,0.0),normo, (pos+ray),ray,pos,vec3(.1),dist)*0.00005),I,0.3);
+    gl_FragColor.rgb *= (maincirc);
+    
+}
+
+
+
+
+</script>
+      
+
+<script type="text/javascript">
+
+var aspect, gl;
+function init()
+{
+   // create webgl context on the canvas element
+   var canvas = document.getElementById("canvas");
+   aspect = canvas.width / canvas.height;
+   try
+   {
+      gl = canvas.getContext("experimental-webgl");
+   }
+   catch (e)
+   {
+      document.write("Whoops! No useful WEB-GL impl available. Are you browsing on your mum's Nokia?.<br>" + e.message);
+      return;
+   }
+   gl.viewport(0, 0, canvas.width, canvas.height);
+   gl.clearColor(0, 0, 0, 1);
+   gl.clear(gl.COLOR_BUFFER_BIT);
+   
+   // get the vertex and fragment shader source
+   var v = document.getElementById("vertex").firstChild.nodeValue;
+   var f = document.getElementById("fragment").firstChild.nodeValue;
+   
+   // compile and link the shaders
+   var vs = gl.createShader(gl.VERTEX_SHADER);
+   gl.shaderSource(vs, v);
+   gl.compileShader(vs);
+   
+   var fs = gl.createShader(gl.FRAGMENT_SHADER);
+   gl.shaderSource(fs, f);
+   gl.compileShader(fs);
+   
+   var program = gl.createProgram();
+   gl.attachShader(program, vs);
+   gl.attachShader(program, fs);
+   gl.linkProgram(program);
+   
+  // debug shader compile status
+   var error = false;
+   if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+   {
+      error = true;
+      console.log(gl.getShaderInfoLog(vs));
+   }
+   
+   if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+   {
+      error = true;
+      console.log(gl.getShaderInfoLog(fs));
+   }
+   
+   if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+   {
+      error = true;
+      console.log(gl.getProgramInfoLog(program));
+   }
+   if (error) return;
+   
+   var pause = false;
+   var firstTime = Date.now();
+   (f = function() {
+      if (!pause)
+      {
+         var vertices = new Float32Array(
+            [
+               -1, 1*aspect, 1, 1*aspect, 1, -1*aspect,
+               -1, 1*aspect, 1, -1*aspect, -1, -1*aspect
+            ]);
+         
+         var vbuffer = gl.createBuffer();
+         gl.bindBuffer(gl.ARRAY_BUFFER, vbuffer);
+         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+         
+         var triCount = 2,
+             numItems = vertices.length / triCount;
+         
+         gl.useProgram(program);
+         var time = (Date.now() - firstTime) / 1000.0;
+         program.time = gl.getUniformLocation(program, "time");
+         gl.uniform1f(program.time, time);
+         program.resolution = gl.getUniformLocation(program, "resolution");
+         gl.uniform2f(program.resolution, canvas.width, canvas.height);
+
+
+         
+         program.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
+         gl.enableVertexAttribArray(program.aVertexPosition);
+         gl.vertexAttribPointer(program.aVertexPosition, triCount, gl.FLOAT, false, 0, 0);
+         
+         gl.drawArrays(gl.TRIANGLES, 0, numItems);
+      }
+      requestAnimationFrame(f);
+   })();
+  
+}
+      </script>
+
+    
+   </head>
+  <body onload="init()" style="
+    background: black;
+    color: white;
+    font-family: monospace;
+    font-size: 200%;
+    text-align: center;
+">
+     
+      <p>Soul Portal</p><canvas id="canvas" width="1024%" height="960%" margin="0-auto" style="
+    margin: 0 auto;
+    width: 50%;
+"></canvas>
+   
+   
+
+</body>
+</html>
+
