@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+   <head>
+
+<script id="vertex" type="x-shader">
+attribute vec2 aVertexPosition;
+
+void main()
+{
+   gl_Position = vec4(aVertexPosition, 0.0, 1.0);
+}
+      </script>
+      
+      <script id="fragment" type="x-shader">
+
+
+#ifdef GL_ES
+precision highp float;
+#endif
+
+
+uniform float time;
+uniform vec2 resolution;
+uniform vec2 Mouse;
+float zoom=1.5;
+
+vec2 cmdt( vec2 a, vec2 b )  { return vec2( a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x ); }
+vec2 cmrt( vec2 a )  { return vec2( a.x*a.x - a.y*a.y, 2.*a.x*a.y  ); }
+
+
+mat2 rot(float a) {
+    return mat2(cos(a),sin(a),-sin(a),cos(a));  
+}
+
+vec2 SphereOff( in vec3 ro, in vec3 rd, in vec4 sph )//from iq
+{
+    vec3 oc = ro - sph.xyz;
+    float b = dot( oc, rd );
+    float c = dot( oc, oc ) - sph.w*sph.w;
+    float h = b*b - c;
+    if( h<0.0 ) return vec2(-1.0);
+    h = sqrt(h);
+    return vec2(-b-h, -b+h );
+}
+
+
+
+
+vec3 map(in vec3 p) {
+    
+    float res = 0.;
+    vec3 c = p;
+    for (int i = 0; i < 8; ++i) {
+        p =.7*abs(p)/dot(p+sin(time*0.2),p-cos(time*0.1)) -.7;
+        p.yz= cmrt(p.yz);
+        p=p.zxy;
+        res += exp(-19. * abs(dot(p,c)));
+        
+    }
+    return vec3(res/2.);
+}
+
+
+
+vec3 raymarch( in vec3 ro, vec3 rd, vec2 minmaxadt )
+{
+    float t = minmaxadt.x;
+    float dt = .02;
+    //float dt = .2 - .195*cos(time*.05);//animated
+    vec3 col= vec3(0.);
+    float c = 0.;
+    for( int i=0; i<64; i++ )
+    {
+        t+=dt*exp(-2.*c);
+        if(t>minmaxadt.y)break;
+        vec3 pos = ro+t*rd;
+        
+        c = map(ro+t*rd).x;
+        float b =  smoothstep(map(ro+t*rd).x,0.05,1.);
+        
+        //fire color
+       col = mix(vec3(0.5, c * 0.2,0.0),vec3(0.1,0.0,0.0),1.0-c * 1.0-c);   
+        
+    }    
+    return col;
+}
+
+
+void main()
+{
+   
+    float time = time;
+    vec2 q = gl_FragCoord.xy / resolution.xy;
+    vec2 p = -1.0 + 2.0 * q;
+    p.x *= resolution.x/resolution.y;
+    vec2 m = vec2(0.);
+    if( Mouse.x>0.0 )m = Mouse.xy/resolution.xy*3.14;
+    m-=.5;
+
+    
+    vec3 ro = zoom*vec3(4.);
+    ro.yz*=rot(m.y);
+    ro.xz*=rot(m.x+ 0.1*time);
+    vec3 ta = vec3( 0.0 , 0.0, 0.0 );
+    vec3 ww = normalize( ta - ro );
+    vec3 uu = normalize( cross(ww,vec3(0.0,1.0,0.0) ) );
+    vec3 vv = normalize( cross(uu,ww));
+    vec3 rd = normalize( p.x*uu + p.y*vv + 4.0*ww );
+
+    
+    vec2 tmm = SphereOff( ro, rd, vec4(0.,0.,0.,2.) );
+
+    // raymarch
+    vec3 col = raymarch(ro,rd,tmm);
+ 
+    gl_FragColor = vec4( raymarch(ro,rd,tmm), 1.0 );
+
+}
+
+
+
+
+
+</script>
+      
+
+<script type="text/javascript">
+
+var aspect, gl;
+function init()
+{
+   // create webgl context on the canvas element
+   var canvas = document.getElementById("canvas");
+   aspect = canvas.width / canvas.height;
+   try
+   {
+      gl = canvas.getContext("experimental-webgl");
+   }
+   catch (e)
+   {
+      document.write("Whoops! No useful WEB-GL impl available. Are you browsing on your mum's Nokia?.<br>" + e.message);
+      return;
+   }
+   gl.viewport(0, 0, canvas.width, canvas.height);
+   gl.clearColor(0, 0, 0, 1);
+   gl.clear(gl.COLOR_BUFFER_BIT);
+   
+   // get the vertex and fragment shader source
+   var v = document.getElementById("vertex").firstChild.nodeValue;
+   var f = document.getElementById("fragment").firstChild.nodeValue;
+   
+   // compile and link the shaders
+   var vs = gl.createShader(gl.VERTEX_SHADER);
+   gl.shaderSource(vs, v);
+   gl.compileShader(vs);
+   
+   var fs = gl.createShader(gl.FRAGMENT_SHADER);
+   gl.shaderSource(fs, f);
+   gl.compileShader(fs);
+   
+   var program = gl.createProgram();
+   gl.attachShader(program, vs);
+   gl.attachShader(program, fs);
+   gl.linkProgram(program);
+   
+  
+   
+   var pause = false;
+   var firstTime = Date.now();
+   (f = function() {
+      if (!pause)
+      {
+         var vertices = new Float32Array(
+            [
+               -1, 1*aspect, 1, 1*aspect, 1, -1*aspect,
+               -1, 1*aspect, 1, -1*aspect, -1, -1*aspect
+            ]);
+         
+         var vbuffer = gl.createBuffer();
+         gl.bindBuffer(gl.ARRAY_BUFFER, vbuffer);
+         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+         
+         var triCount = 2,
+             numItems = vertices.length / triCount;
+         
+         gl.useProgram(program);
+         var time = (Date.now() - firstTime) / 1000.0;
+         program.time = gl.getUniformLocation(program, "time");
+         gl.uniform1f(program.time, time);
+         program.resolution = gl.getUniformLocation(program, "resolution");
+         gl.uniform2f(program.resolution, canvas.width, canvas.height);
+
+       
+         
+         program.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
+         gl.enableVertexAttribArray(program.aVertexPosition);
+         gl.vertexAttribPointer(program.aVertexPosition, triCount, gl.FLOAT, false, 0, 0);
+         
+         gl.drawArrays(gl.TRIANGLES, 0, numItems);
+      }
+      requestAnimationFrame(f);
+   })();
+  
+}
+      </script>
+
+    
+   </head>
+  <body onload="init()" style="
+    background: black;
+    color: white;
+    font-family: monospace;
+    font-size: 200%;
+    text-align: center;
+">
+     
+      <p>Fire</p><canvas id="canvas" width="1024%" height="960%" margin="0-auto" style="
+    margin: 0 auto;
+    width: 100%;
+"></canvas>
+   
+   
+
+</body>
+</html>
